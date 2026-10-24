@@ -26,7 +26,7 @@ jobs:
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" integrate install
 
-       - name: Patch plugin-sdk RenderWare headers
+      - name: Patch plugin-sdk RenderWare headers
         shell: pwsh
         run: |
           $d = "rwsdk\include\d3d9"
