@@ -65,29 +65,34 @@ jobs:
           Edit-Source $f 'static decltype\(InitializeConditionVariable\)\*' 'static BOOL (WINAPI*)(PSWITCH_COALESCING_CONTEXT)'
 
       - name: Build Solution
-        run: msbuild SilentPatchSA.sln /p:Configuration=Release /p:Platform=x86
+        shell: pwsh
+        run: |
+          $sln = Get-ChildItem -Recurse -Filter "*.sln" | Select-Object -First 1
+          if (-not $sln) { throw "File .sln tidak ditemukan di seluruh direktori!" }
+          Write-Host "Menemukan solution: $($sln.FullName)"
+          msbuild "$($sln.FullName)" /p:Configuration=Release /p:Platform=x86
 
       - name: Organize Output Artifacts (.asi & .ini)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "dist"
 
-          # 1. Cari file .asi atau .dll hasil build, ubah/salin ke dist/SilentPatchSA.asi
-          $builtBinary = Get-ChildItem -Recurse -Include "SilentPatchSA.asi", "SilentPatchSA.dll" | Select-Object -First 1
+          # 1. Cari file .asi atau .dll hasil build, salin ke dist/SilentPatchSA.asi
+          $builtBinary = Get-ChildItem -Recurse -Include "*.asi", "*.dll" | Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
           if ($builtBinary) {
               Copy-Item $builtBinary.FullName -Destination "dist\SilentPatchSA.asi" -Force
               Write-Host "Berhasil menyalin $($builtBinary.Name) ke dist\SilentPatchSA.asi"
           } else {
-              throw "File .asi atau .dll tidak ditemukan dalam folder build!"
+              throw "File binary (.asi/.dll) dari folder Release tidak ditemukan!"
           }
 
           # 2. Cari file .ini lalu salin ke folder dist
-          $iniFile = Get-ChildItem -Recurse -Include "SilentPatchSA.ini" | Select-Object -First 1
+          $iniFile = Get-ChildItem -Recurse -Filter "SilentPatchSA.ini" | Select-Object -First 1
           if ($iniFile) {
               Copy-Item $iniFile.FullName -Destination "dist\SilentPatchSA.ini" -Force
               Write-Host "Berhasil menyalin SilentPatchSA.ini ke dist\"
           } else {
-              Write-Warning "File SilentPatchSA.ini tidak ditemukan!"
+              Write-Warning "File SilentPatchSA.ini tidak ditemukan di source tree, melompati..."
           }
 
       - name: Upload Artifacts
