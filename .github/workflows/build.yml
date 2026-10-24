@@ -62,4 +62,4 @@ jobs:
 
           # 2) SilentPatchSA.cpp: explicit kernel32 signatures instead of decltype() of SDK declarations
           $f = 'SilentPatchSA\SilentPatchSA.cpp'
-          Edit-Source $f 'static decltype\(InitializeConditionVariable\)\*
+          Edit-Source $f 'static decltype\(InitializeConditionVariable\)\*' 'static BOOL (WINAPI*)(PSWITCH_COALESCING_CONTEXT)'
