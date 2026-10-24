@@ -39,6 +39,31 @@ jobs:
           if (Select-String -Path "$d\rwplcore.h" -Pattern '\*&RwEngineInstance') { throw "rwplcore.h patch failed" }
           if (Select-String -Path "$d\rtanim.h" -Pattern '<rw/rtanim') { throw "rtanim.h patch failed" }
 
+      - name: Patch SilentPatch source for the v143 toolset
+        shell: pwsh
+        run: |
+          $enc = [Text.Encoding]::GetEncoding(28591)   # byte-for-byte round trip, no re-encoding
+
+          function Edit-Source([string]$Path, [string]$Pattern, [string]$Replacement) {
+            $full = Join-Path (Get-Location).Path $Path
+            $text = [IO.File]::ReadAllText($full, $enc)
+            $new = [regex]::Replace($text, $Pattern, $Replacement)
+            if ($new -ceq $text) { throw "Patch did not apply: $Path ($Pattern)" }
+            [IO.File]::WriteAllText($full, $new, $enc)
+          }
+
+          # 1) VehicleSA.h: declare LightbeamFix::SetCurrentVehicle before the template that uses it (/permissive-)
+          $vh = Join-Path (Get-Location).Path 'SilentPatchSA\VehicleSA.h'
+          $nl = if ([IO.File]::ReadAllText($vh, $enc).Contains("`r`n")) { "`r`n" } else { "`n" }
+          $fwd = "class CVehicle;" + $nl + "namespace LightbeamFix { void SetCurrentVehicle( CVehicle* vehicle ); }" + $nl + $nl
+          Edit-Source 'SilentPatchSA\VehicleSA.h' '(?m)^(?=class NOVMT CVehicle\s*:\s*public CPhysical)' $fwd
+
+          # 2) SilentPatchSA.cpp: explicit kernel32 signatures instead of decltype() of SDK declarations
+          $f = 'SilentPatchSA\SilentPatchSA.cpp'
+          Edit-Source $f 'static decltype\(InitializeConditionVariable\)\* pInitializeConditionVariable = nullptr;' 'static void (WINAPI* pInitializeConditionVariable)(CONDITION_VARIABLE*) = nullptr;'
+          Edit-Source $f 'static decltype\(SleepConditionVariableCS\)\* pSleepConditionVariableCS = nullptr;' 'static BOOL (WINAPI* pSleepConditionVariableCS)(CONDITION_VARIABLE*, CRITICAL_SECTION*, DWORD) = nullptr;'
+          Edit-Source $f 'static decltype\(WakeConditionVariable\)\* pWakeConditionVariable = nullptr;' 'static void (WINAPI* pWakeConditionVariable)(CONDITION_VARIABLE*) = nullptr;'
+
       - name: Build SilentPatchSA (Release|Win32)
         shell: pwsh
         env:
