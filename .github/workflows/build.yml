@@ -1,0 +1,57 @@
+name: Build SilentPatchSA
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to build"
+        required: false
+        default: "main"
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout (with ModUtils submodule)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Enable vcpkg MSBuild integration
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" integrate install
+
+      - name: Build SilentPatchSA (Release|Win32)
+        shell: pwsh
+        env:
+          RWG36SDK: ${{ github.workspace }}\rwsdk
+        run: |
+          msbuild SilentPatchSA\SilentPatchSA.vcxproj `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=Win32 `
+            /p:PlatformToolset=v143 `
+            /p:WindowsTargetPlatformVersion=10.0 `
+            /p:VcpkgEnableManifest=true `
+            /verbosity:minimal
+
+      - name: Collect .asi and .ini
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $asi = Get-ChildItem -Recurse -Filter SilentPatchSA.asi | Select-Object -First 1
+          if (-not $asi) { throw "SilentPatchSA.asi was not produced" }
+          Copy-Item $asi.FullName dist\
+          Copy-Item Config\SilentPatchSA.ini dist\
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SilentPatchSA
+          path: dist/
+          if-no-files-found: error
