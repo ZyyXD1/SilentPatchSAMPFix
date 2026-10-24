@@ -26,7 +26,7 @@ jobs:
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" integrate install
 
-      - name: Patch plugin-sdk RenderWare headers
+       - name: Patch plugin-sdk RenderWare headers
         shell: pwsh
         run: |
           $d = "rwsdk\include\d3d9"
@@ -35,9 +35,11 @@ jobs:
           Set-Content "$d\rwplcore.h" -Value $p -NoNewline
           $a = Get-Content "$d\rtanim.h" -Raw
           $a = $a -replace '#include <rw/rtanim\.rpe>', '#include "rtanim.rpe"'
+          $a = $a -replace '//(\s*RwInt32\s+animKeyFrameSize;)', '$1'
           Set-Content "$d\rtanim.h" -Value $a -NoNewline
           if (Select-String -Path "$d\rwplcore.h" -Pattern '\*&RwEngineInstance') { throw "rwplcore.h patch failed" }
           if (Select-String -Path "$d\rtanim.h" -Pattern '<rw/rtanim') { throw "rtanim.h patch failed" }
+          if (-not (Select-String -Path "$d\rtanim.h" -Pattern '^\s*RwInt32\s+animKeyFrameSize;')) { throw "animKeyFrameSize patch failed" }
 
       - name: Patch SilentPatch source for the v143 toolset
         shell: pwsh
