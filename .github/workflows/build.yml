@@ -85,6 +85,11 @@ jobs:
           edit(cpp, r"^(\t\t)static void \(\*orgWrapFunction\)\(",
                lambda m: m.group(1) + "static inline void (*orgWrapFunction)(")
 
+          # --- SA-MP crash fix: CTimeCycle::Initialise (0x5BBAC0) faults inside sscanf_TimecycLine ---
+          # This hook is new since the April build. Disabling it restores April behaviour for timecyc.dat parsing.
+          edit(cpp, r"^(\t\t)InterceptCall\(0x5BBCE2, orgSscanf, sscanf_TimecycLine\);",
+               lambda m: m.group(1) + "// disabled for SA-MP: InterceptCall(0x5BBCE2, orgSscanf, sscanf_TimecycLine);")
+
           print("All patches applied.")
 
       - name: Build SilentPatchSA (Release|Win32)
