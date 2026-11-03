@@ -7,6 +7,10 @@ on:
         description: "Branch, tag or commit to build"
         required: false
         default: "main"
+      sa_mp_resolution_safe:
+        description: "Leave the resolution-list code alone (SA-MP rewrites it). Diagnostic for the resolution bug."
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -35,7 +39,10 @@ jobs:
 
       - name: Patch sources for the v143 toolset and plugin-sdk headers
         shell: python
+        env:
+          SAFE_RES: ${{ inputs.sa_mp_resolution_safe }}
         run: |
+          import os
           import pathlib
           import re
           import sys
@@ -91,6 +98,21 @@ jobs:
           # This hook is new since the April build. Disabling it restores April behaviour for timecyc.dat parsing.
           edit(cpp, r"^(\t\t)InterceptCall\(0x5BBCE2, orgSscanf, sscanf_TimecycLine\);",
                lambda m: m.group(1) + "// disabled for SA-MP: InterceptCall(0x5BBCE2, orgSscanf, sscanf_TimecycLine);")
+
+          # --- Diagnostic: leave the resolution-list code alone (SA-MP rewrites this block) ---
+          # Comments out SilentPatch's edits around 0x7455E0-0x745C00 and 0x74596C-0x7459D0 in the 1.0 path.
+          if os.environ.get("SAFE_RES", "true").lower() == "true":
+              for stmt in (
+                  r"Nop\(0x745B71, 6\);", r"Nop\(0x745B81, 6\);", r"Nop\(0x745BFC, 2\);",
+                  r"Nop\(0x74596C, 6\);", r"Nop\(0x74597A, 6\);",
+                  r"ReadCall\( 0x745B1E, orgGetNumVideoModes \);",
+                  r"InjectHook\(0x745B1E, GetNumVideoModes_Store\);",
+                  r"InjectHook\(0x745A81, GetNumVideoModes_Retrieve\);",
+                  r"InjectHook\(0x7455E0, GetAvailableMemory_Fake, HookType::Jump\);",
+              ):
+                  edit(cpp, r"^(\t+)(" + stmt + r")", lambda m: m.group(1) + "// SA-MP safe: " + m.group(2))
+          else:
+              print("SAFE_RES is off: resolution-list code left as upstream")
 
           print("All patches applied.")
 
