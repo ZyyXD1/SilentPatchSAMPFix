@@ -21,82 +21,98 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Enable vcpkg MSBuild integration
         shell: pwsh
         run: |
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" integrate install
 
-      - name: Patch plugin-sdk RenderWare headers
+      - name: Patch sources for the v143 toolset and plugin-sdk headers
+        shell: python
+        run: |
+          import pathlib
+          import re
+          import sys
+
+          def edit(path, pattern, repl, expected=1):
+              p = pathlib.Path(path)
+              text = p.read_bytes().decode("latin-1")   # byte-for-byte round trip
+              new, n = re.subn(pattern, repl, text, flags=re.M)
+              if n != expected:
+                  sys.exit(f"PATCH FAILED: expected {expected} match(es), found {n} in {path}: {pattern}")
+              p.write_bytes(new.encode("latin-1"))
+              print(f"ok ({n}x) {path}: {pattern[:70]}")
+
+          sdk = "rwsdk/include/d3d9"
+          vh = "SilentPatchSA/VehicleSA.h"
+          cpp = "SilentPatchSA/SilentPatchSA.cpp"
+
+          # --- plugin-sdk RenderWare headers: restore the original SDK form ---
+          edit(sdk + "/rwplcore.h", r"\*&RwEngineInstance;", lambda m: "*RwEngineInstance;")
+          edit(sdk + "/rtanim.h", r"#include <rw/rtanim\.rpe>", lambda m: '#include "rtanim.rpe"')
+          edit(sdk + "/rtanim.h", r"//(\s*RwInt32\s+animKeyFrameSize;)", lambda m: m.group(1))
+
+          # --- VehicleSA.h: declare LightbeamFix::SetCurrentVehicle before the template using it (/permissive-) ---
+          nl = "\r\n" if b"\r\n" in pathlib.Path(vh).read_bytes() else "\n"
+          fwd = "class CVehicle;" + nl + "namespace LightbeamFix { void SetCurrentVehicle( CVehicle* vehicle ); }" + nl + nl
+          edit(vh, r"^(?=class NOVMT CVehicle\s*:\s*public CPhysical)", lambda m: fwd)
+
+          # --- SilentPatchSA.cpp: explicit kernel32 signatures instead of decltype() of SDK declarations ---
+          edit(cpp, r"static decltype\(InitializeConditionVariable\)\* pInitializeConditionVariable = nullptr;",
+               lambda m: "static void (WINAPI* pInitializeConditionVariable)(CONDITION_VARIABLE*) = nullptr;")
+          edit(cpp, r"static decltype\(SleepConditionVariableCS\)\* pSleepConditionVariableCS = nullptr;",
+               lambda m: "static BOOL (WINAPI* pSleepConditionVariableCS)(CONDITION_VARIABLE*, CRITICAL_SECTION*, DWORD) = nullptr;")
+          edit(cpp, r"static decltype\(WakeConditionVariable\)\* pWakeConditionVariable = nullptr;",
+               lambda m: "static void (WINAPI* pWakeConditionVariable)(CONDITION_VARIABLE*) = nullptr;")
+
+          # --- HookEach: in-class static variable templates need 'inline' to be defined (fixes LNK2001) ---
+          edit(vh, r"static void \(CVehicle::\*orgDoHeadLightBeam\)\(",
+               lambda m: "static inline void (CVehicle::*orgDoHeadLightBeam)(")
+          edit(vh, r"static void \(CAutomobile::\*orgAutomobilePreRender\)\(",
+               lambda m: "static inline void (CAutomobile::*orgAutomobilePreRender)(")
+          edit(vh, r"static void \(CAutomobile::\*orgSpawnFlyingComponent\)\(",
+               lambda m: "static inline void (CAutomobile::*orgSpawnFlyingComponent)(")
+          edit(vh, r"static CVehicle\* \(CStoredCar::\*orgRestoreCar\)\(",
+               lambda m: "static inline CVehicle* (CStoredCar::*orgRestoreCar)(")
+          edit(cpp, r"^(\t\t)static void \(\*orgPrintString\)\(",
+               lambda m: m.group(1) + "static inline void (*orgPrintString)(", expected=2)
+          edit(cpp, r"^(\t\t)static void \(\*orgSetRightJustifyWrap\)\(",
+               lambda m: m.group(1) + "static inline void (*orgSetRightJustifyWrap)(")
+          edit(cpp, r"^(\t\t)static void \(\*orgWrapFunction\)\(",
+               lambda m: m.group(1) + "static inline void (*orgWrapFunction)(")
+
+          print("All patches applied.")
+
+      - name: Build SilentPatchSA (Release|Win32)
+        shell: pwsh
+        env:
+          RWG36SDK: ${{ github.workspace }}\rwsdk
+        run: |
+          msbuild SilentPatchSA\SilentPatchSA.vcxproj `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=Win32 `
+            /p:PlatformToolset=v143 `
+            /p:WindowsTargetPlatformVersion=10.0 `
+            /p:VcpkgEnableManifest=true `
+            /verbosity:minimal
+
+      - name: Collect .asi and .ini
         shell: pwsh
         run: |
-          $d = "rwsdk\include\d3d9"
-          $p = Get-Content "$d\rwplcore.h" -Raw
-          $p = $p -replace '\*&RwEngineInstance;', '*RwEngineInstance;'
-          Set-Content "$d\rwplcore.h" -Value $p -NoNewline
-          $a = Get-Content "$d\rtanim.h" -Raw
-          $a = $a -replace '#include <rw/rtanim\.rpe>', '#include "rtanim.rpe"'
-          $a = $a -replace '//(\s*RwInt32\s+animKeyFrameSize;)', '$1'
-          Set-Content "$d\rtanim.h" -Value $a -NoNewline
-          if (Select-String -Path "$d\rwplcore.h" -Pattern '\*&RwEngineInstance') { throw "rwplcore.h patch failed" }
-          if (Select-String -Path "$d\rtanim.h" -Pattern '<rw/rtanim') { throw "rtanim.h include patch failed" }
-          if (-not (Select-String -Path "$d\rtanim.h" -Pattern '^\s*RwInt32\s+animKeyFrameSize;')) { throw "animKeyFrameSize patch failed" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $asi = Get-ChildItem -Recurse -Filter SilentPatchSA.asi | Select-Object -First 1
+          if (-not $asi) { throw "SilentPatchSA.asi was not produced" }
+          Copy-Item $asi.FullName dist\
+          Copy-Item Config\SilentPatchSA.ini dist\
 
-      - name: Patch SilentPatch source for the v143 toolset
-        shell: pwsh
-        run: |
-          $enc = [Text.Encoding]::GetEncoding(28591)   # byte-for-byte round trip, no re-encoding
-
-          function Edit-Source([string]$Path, [string]$Pattern, [string]$Replacement, [int]$Expected = 1) {
-            $full = Join-Path (Get-Location).Path $Path
-            $text = [IO.File]::ReadAllText($full, $enc)
-            $count = [regex]::Matches($text, $Pattern).Count
-            if ($count -ne $Expected) { throw "Patch expected $Expected match(es) but found $count in $Path :: $Pattern" }
-            [IO.File]::WriteAllText($full, [regex]::Replace($text, $Pattern, $Replacement), $enc)
-          }
-
-          # 1) VehicleSA.h: declare LightbeamFix::SetCurrentVehicle before the template that uses it (/permissive-)
-          $vh = Join-Path (Get-Location).Path 'SilentPatchSA\VehicleSA.h'
-          $nl = if ([IO.File]::ReadAllText($vh, $enc).Contains("`r`n")) { "`r`n" } else { "`n" }
-          $fwd = "class CVehicle;" + $nl + "namespace LightbeamFix { void SetCurrentVehicle( CVehicle* vehicle ); }" + $nl + $nl
-          Edit-Source 'SilentPatchSA\VehicleSA.h' '(?m)^(?=class NOVMT CVehicle\s*:\s*public CPhysical)' $fwd
-
-          # 2) SilentPatchSA.cpp: explicit kernel32 signatures instead of decltype() of SDK declarations
-          $f = 'SilentPatchSA\SilentPatchSA.cpp'
-          Edit-Source $f 'static decltype\(InitializeConditionVariable\)\*' 'static BOOL (WINAPI*)(PSWITCH_COALESCING_CONTEXT)'
-
-      - name: Build Solution
-        shell: pwsh
-        run: |
-          $sln = Get-ChildItem -Recurse -Filter "*.sln" | Select-Object -First 1
-          if (-not $sln) { throw "File .sln tidak ditemukan di seluruh direktori!" }
-          Write-Host "Menemukan solution: $($sln.FullName)"
-          msbuild "$($sln.FullName)" /p:Configuration=Release /p:Platform=x86
-
-      - name: Organize Output Artifacts (.asi & .ini)
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "dist"
-
-          # 1. Cari file .asi atau .dll hasil build, salin ke dist/SilentPatchSA.asi
-          $builtBinary = Get-ChildItem -Recurse -Include "*.asi", "*.dll" | Where-Object { $_.FullName -match "Release" } | Select-Object -First 1
-          if ($builtBinary) {
-              Copy-Item $builtBinary.FullName -Destination "dist\SilentPatchSA.asi" -Force
-              Write-Host "Berhasil menyalin $($builtBinary.Name) ke dist\SilentPatchSA.asi"
-          } else {
-              throw "File binary (.asi/.dll) dari folder Release tidak ditemukan!"
-          }
-
-          # 2. Cari file .ini lalu salin ke folder dist
-          $iniFile = Get-ChildItem -Recurse -Filter "SilentPatchSA.ini" | Select-Object -First 1
-          if ($iniFile) {
-              Copy-Item $iniFile.FullName -Destination "dist\SilentPatchSA.ini" -Force
-              Write-Host "Berhasil menyalin SilentPatchSA.ini ke dist\"
-          } else {
-              Write-Warning "File SilentPatchSA.ini tidak ditemukan di source tree, melompati..."
-          }
-
-      - name: Upload Artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SilentPatchSA-Release
+          name: SilentPatchSA
           path: dist/
+          if-no-files-found: error
