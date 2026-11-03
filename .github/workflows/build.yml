@@ -11,6 +11,8 @@ on:
 jobs:
   build:
     runs-on: windows-2022
+    permissions:
+      contents: write
     steps:
       - name: Checkout (with ModUtils submodule)
         uses: actions/checkout@v4
@@ -121,3 +123,42 @@ jobs:
           name: SilentPatchSA
           path: dist/
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          import os
+          import shutil
+          import subprocess
+
+          number = os.environ["RUN_NUMBER"]
+          attempt = os.environ["RUN_ATTEMPT"]
+          tag = f"build-{number}" if attempt == "1" else f"build-{number}-r{attempt}"
+          sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+
+          zip_base = f"SilentPatchSA-{tag}"
+          shutil.make_archive(zip_base, "zip", "dist")
+
+          notes = (
+              f"SilentPatchSA for GTA SA 1.0 / SA-MP, built from repository commit {sha[:7]}.\n\n"
+              "Build-time patches: v143 toolset fixes, plugin-sdk RenderWare header fixes, "
+              "and the timecycle sscanf hook disabled (startup crash under SA-MP).\n\n"
+              "Install: put SilentPatchSA.asi and SilentPatchSA.ini in your GTA San Andreas folder, "
+              "replacing any older SilentPatch files."
+          )
+
+          cmd = [
+              "gh", "release", "create", tag,
+              f"{zip_base}.zip", "dist/SilentPatchSA.asi", "dist/SilentPatchSA.ini",
+              "--repo", os.environ["REPO"],
+              "--target", sha,
+              "--title", f"SilentPatchSA SA-MP build #{number}",
+              "--notes", notes,
+          ]
+          print("Creating release", tag, "from", sha)
+          subprocess.run(cmd, check=True)
