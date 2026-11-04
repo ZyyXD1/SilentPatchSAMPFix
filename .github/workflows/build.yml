@@ -7,10 +7,11 @@ on:
         description: "Branch, tag or commit to build"
         required: false
         default: "main"
-      sa_mp_resolution_safe:
-        description: "Leave the resolution-list code alone (SA-MP rewrites it). Diagnostic for the resolution bug."
-        type: boolean
-        default: true
+      disable_groups:
+        description: "Comma list of SilentPatch display code to leave alone: list, msaa, videomode, dialog, or all. Empty = upstream behaviour."
+        required: false
+        type: string
+        default: "all"
 
 jobs:
   build:
@@ -40,7 +41,7 @@ jobs:
       - name: Patch sources for the v143 toolset and plugin-sdk headers
         shell: python
         env:
-          SAFE_RES: ${{ inputs.sa_mp_resolution_safe }}
+          DISABLE_GROUPS: ${{ inputs.disable_groups }}
         run: |
           import os
           import pathlib
@@ -99,9 +100,22 @@ jobs:
           edit(cpp, r"^(\t\t)InterceptCall\(0x5BBCE2, orgSscanf, sscanf_TimecycLine\);",
                lambda m: m.group(1) + "// disabled for SA-MP: InterceptCall(0x5BBCE2, orgSscanf, sscanf_TimecycLine);")
 
-          # --- Diagnostic: leave the resolution-list code alone (SA-MP rewrites this block) ---
-          # Comments out SilentPatch's edits around 0x7455E0-0x745C00 and 0x74596C-0x7459D0 in the 1.0 path.
-          if os.environ.get("SAFE_RES", "true").lower() == "true":
+          # --- Diagnostic switches: leave selected SilentPatch display code alone (SA-MP rewrites parts of it) ---
+          # DISABLE_GROUPS is a comma list of: list, msaa, videomode, dialog (or "all"). Empty = upstream behaviour.
+          raw = os.environ.get("DISABLE_GROUPS", "")
+          groups = {g.strip().lower() for g in raw.split(",") if g.strip()}
+          if "all" in groups:
+              groups = {"list", "msaa", "videomode", "dialog"}
+          unknown = groups - {"list", "msaa", "videomode", "dialog"}
+          if unknown:
+              sys.exit(f"Unknown disable group(s): {sorted(unknown)}")
+          print("Disabled groups:", sorted(groups) or "none")
+
+          def comment_out(stmt, after=""):
+              # Comment a statement line, optionally requiring a lookahead so only the 1.0 occurrence matches.
+              edit(cpp, r"^(\t+)(" + stmt + r")" + after, lambda m: m.group(1) + "// SA-MP safe: " + m.group(2))
+
+          if "list" in groups:   # resolution list edits
               for stmt in (
                   r"Nop\(0x745B71, 6\);", r"Nop\(0x745B81, 6\);", r"Nop\(0x745BFC, 2\);",
                   r"Nop\(0x74596C, 6\);", r"Nop\(0x74597A, 6\);",
@@ -110,9 +124,26 @@ jobs:
                   r"InjectHook\(0x745A81, GetNumVideoModes_Retrieve\);",
                   r"InjectHook\(0x7455E0, GetAvailableMemory_Fake, HookType::Jump\);",
               ):
-                  edit(cpp, r"^(\t+)(" + stmt + r")", lambda m: m.group(1) + "// SA-MP safe: " + m.group(2))
-          else:
-              print("SAFE_RES is off: resolution-list code left as upstream")
+                  comment_out(stmt)
+
+          if "msaa" in groups:   # MSAA menu fixes: unconditional patches and InterceptCall hooks in CMenuManager code
+              comment_out(r"Patch<BYTE>\(0x57D126, 0xEB\);")
+              comment_out(r"Nop\(0x57D0E8, 2\);")
+              comment_out(r"HookEach_GetMaxMultiSamplingLevels\(getMaxMultiSamplingLevels, InterceptCall\);",
+                          r"(?=\r?\n\r?\n\t\tstd::array<uintptr_t, 4> setOrChangeMultiSamplingLevels = \{ 0x5744FD)")
+              comment_out(r"HookEach_SetOrChangeMultiSamplingLevels\(setOrChangeMultiSamplingLevels, InterceptCall\);",
+                          r"(?=\r?\n\r?\n\t\tNop\(0x57A0FC, 1\);)")
+              comment_out(r"Nop\(0x57A0FC, 1\);")
+              comment_out(r"InjectHook\(0x57A0FD, MSAAText, HookType::Call\);")
+
+          if "videomode" in groups:   # hooks on the calls that apply a new video mode
+              comment_out(r"HookEach_SetCurrentVideoMode\(setCurrentVideoMode, InterceptCall\);",
+                          r"(?=\r?\n\t\tInterceptCall\(0x745C7D)")
+              comment_out(r"InterceptCall\(0x745C7D, orgSetupBackBufferVertex, SetupBackBufferVertex_Nop\);")
+
+          if "dialog" in groups:   # remade monitor/resolution selection dialog (1.0 path)
+              edit(cpp, r"^(\t)if \(NewResolutionSelectionDialog::HasGameBindings\(\)\)(?=\r?\n\t\{\r?\n\t\tusing namespace NewResolutionSelectionDialog;\r?\n\r?\n\t\tppRWD3D9 = \*AddressByRegion_10)",
+                   lambda m: m.group(1) + "if (false && NewResolutionSelectionDialog::HasGameBindings())")
 
           print("All patches applied.")
 
