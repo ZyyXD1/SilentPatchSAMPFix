@@ -8,7 +8,7 @@ on:
         required: false
         default: "main"
       disable_groups:
-        description: "Comma list of SilentPatch display code to leave alone: list, msaa, videomode, dialog, or all. Empty = upstream behaviour."
+        description: "Comma list of SilentPatch code to leave alone: list, msaa, videomode, dialog (all = these four), plus muzzle (muzzle-flash fix, never part of all). Empty = upstream behaviour."
         required: false
         type: string
         default: "all"
@@ -106,7 +106,7 @@ jobs:
           groups = {g.strip().lower() for g in raw.split(",") if g.strip()}
           if "all" in groups:
               groups = {"list", "msaa", "videomode", "dialog"}
-          unknown = groups - {"list", "msaa", "videomode", "dialog"}
+          unknown = groups - {"list", "msaa", "videomode", "dialog", "muzzle"}
           if unknown:
               sys.exit(f"Unknown disable group(s): {sorted(unknown)}")
           print("Disabled groups:", sorted(groups) or "none")
@@ -144,6 +144,10 @@ jobs:
           if "dialog" in groups:   # remade monitor/resolution selection dialog (1.0 path)
               edit(cpp, r"^(\t)if \(NewResolutionSelectionDialog::HasGameBindings\(\)\)(?=\r?\n\t\{\r?\n\t\tusing namespace NewResolutionSelectionDialog;\r?\n\r?\n\t\tppRWD3D9 = \*AddressByRegion_10)",
                    lambda m: m.group(1) + "if (false && NewResolutionSelectionDialog::HasGameBindings())")
+
+          if "muzzle" in groups:   # muzzle flash on last bullet: fixed-address patch inside CTaskSimpleUseGun code (1.0 path)
+              comment_out(r"Nop\(0x61ECDC, 6\);")
+              comment_out(r"Patch\(0x61ECE2, \{ 0x84, 0xC0, 0x74 \}\);")
 
           print("All patches applied.")
 
