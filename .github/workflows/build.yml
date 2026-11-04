@@ -8,7 +8,7 @@ on:
         required: false
         default: "main"
       disable_groups:
-        description: "Comma list of SilentPatch code to leave alone: list, msaa, videomode, dialog (all = these four), plus muzzle (muzzle-flash fix, never part of all). Empty = upstream behaviour."
+        description: "Comma list of SilentPatch code to leave alone: list, msaa, videomode, dialog (all = these four), plus muzzle, and the entity/anim/streaming suspects: props, tempobj, rc, replay, stream, heap (suspects = those six). muzzle and suspects are never part of all. Empty = upstream behaviour."
         required: false
         type: string
         default: "all"
@@ -105,8 +105,11 @@ jobs:
           raw = os.environ.get("DISABLE_GROUPS", "")
           groups = {g.strip().lower() for g in raw.split(",") if g.strip()}
           if "all" in groups:
-              groups = {"list", "msaa", "videomode", "dialog"}
-          unknown = groups - {"list", "msaa", "videomode", "dialog", "muzzle"}
+              groups = (groups - {"all"}) | {"list", "msaa", "videomode", "dialog"}
+          SUSPECTS = {"props", "tempobj", "rc", "replay", "stream", "heap"}
+          if "suspects" in groups:
+              groups = (groups - {"suspects"}) | SUSPECTS
+          unknown = groups - {"list", "msaa", "videomode", "dialog", "muzzle"} - SUSPECTS
           if unknown:
               sys.exit(f"Unknown disable group(s): {sorted(unknown)}")
           print("Disabled groups:", sorted(groups) or "none")
@@ -148,6 +151,24 @@ jobs:
           if "muzzle" in groups:   # muzzle flash on last bullet: fixed-address patch inside CTaskSimpleUseGun code (1.0 path)
               comment_out(r"Nop\(0x61ECDC, 6\);")
               comment_out(r"Patch\(0x61ECE2, \{ 0x84, 0xC0, 0x74 \}\);")
+
+          def gate(cond):
+              # 1.0 path only: the Steam/new-binaries copies of these conditions are followed by ' try'
+              edit(cpp, r"^(\t)if \(" + cond + r"\)(?=\r?\n\t\{)",
+                   lambda m: m.group(1) + "if (false && " + cond.replace("\\", "") + ")")
+
+          if "props" in groups:    # delayed destruction of held props (0x5E03D4)
+              comment_out(r"Patch\(0x5E03D4, \{ 0x81, 0x4E, 0x1C, 0x00, 0x08, 0x00, 0x00, 0xEB, 0x0F \}\);")
+          if "heap" in groups:     # 0x5C25D3 heap corruption fix
+              comment_out(r"Nop\(0x5C25D3, 5\);")
+          if "stream" in groups:   # RtAnimInterpolatorSetCurrentAnim replacement ("streaming memory bug")
+              comment_out(r"InjectHook\(0x4C51A9, GTARtAnimInterpolatorSetCurrentAnim\);")
+          if "tempobj" in groups:  # CObject::TryToFreeUpTempObjects replacement
+              gate(r"HasGameBindings_TryToFreeUpTempObjects\(\)")
+          if "rc" in groups:       # FindPlayer wrappers for RC streaming
+              gate(r"HasGameBindings_FindPlayer\(\)")
+          if "replay" in groups:   # replay PlayerPed crash fixes
+              gate(r"ReplayPlayerPedCrashFixes::HasGameBindings\(\)")
 
           print("All patches applied.")
 
